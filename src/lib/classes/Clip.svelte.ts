@@ -15,6 +15,7 @@ import type { Track } from './Track.svelte';
 import type { Category, StyleName } from './VideoStyle.svelte';
 import { Quran } from './Quran';
 import QPCFontProvider from '$lib/services/FontProvider';
+import type { SubtitleAlignmentMetadata } from '$lib/services/AutoSegmentation';
 
 type ClipType =
 	| 'Silence'
@@ -166,10 +167,12 @@ export class AssetClip extends Clip {
 }
 
 export class ClipWithTranslation extends Clip {
+	hasBeenVerified: boolean = $state(false);
 	translations: { [key: string]: Translation } = $state({});
 	text: string = $state('');
 	arabicInlineStyleRuns: TranslationInlineStyleRun[] = $state([]);
 	associatedImagePath: string | null = $state(null);
+	needsLongReview: boolean = $state(false); // Vrai si le segment a été marqué comme trop long.
 	comeFromIA: boolean = $state(false);
 	confidence: number | null = $state(null); // Entre 0 et 1
 	needsReview: boolean = $state(false); // Vrai si c'est un segment à low-confidence et qu'il n'a pas encore été reviewé
@@ -198,6 +201,8 @@ export class ClipWithTranslation extends Clip {
 		this.confidence = null;
 		this.needsReview = false; // Le segment n'a plus besoin de review de confiance
 		this.needsCoverageReview = false; // Le segment n'a plus besoin de review de couverture
+		this.needsLongReview = false;
+		this.hasBeenVerified = false;
 	}
 
 	/**
@@ -274,6 +279,57 @@ export class ClipWithTranslation extends Clip {
 	}
 }
 
+export type ReviewIssueCategory = 'coverage' | 'long' | 'low-confidence';
+
+/**
+ * Retourne `true` si le clip porte au moins un indicateur de revue actif.
+ *
+ * @param {ClipWithTranslation | null | undefined} clip Clip a inspecter.
+ * @returns {boolean} `true` si le clip doit etre considere comme reviewable.
+ */
+export function hasClipReviewIssue(clip: ClipWithTranslation | null | undefined): boolean {
+	return !!clip && (clip.needsCoverageReview || clip.needsLongReview || clip.needsReview);
+}
+
+/**
+ * Retourne la categorie principale de review d'un clip.
+ *
+ * @param {ClipWithTranslation | null | undefined} clip Clip a inspecter.
+ * @returns {ReviewIssueCategory | null} Categorie principale ou `null`.
+ */
+export function getClipPrimaryReviewIssueCategory(
+	clip: ClipWithTranslation | null | undefined
+): ReviewIssueCategory | null {
+	if (!clip) return null;
+	if (clip.needsCoverageReview) return 'coverage';
+	if (clip.needsLongReview) return 'long';
+	if (clip.needsReview) return 'low-confidence';
+	return null;
+}
+
+/**
+ * Retourne `true` si le clip a encore besoin d'une verification explicite.
+ *
+ * @param {ClipWithTranslation | null | undefined} clip Clip a inspecter.
+ * @returns {boolean} `true` si le clip est signale et non encore verifie.
+ */
+export function isClipPendingVerification(
+	clip: ClipWithTranslation | null | undefined
+): boolean {
+	return !!clip && hasClipReviewIssue(clip) && clip.hasBeenVerified !== true;
+}
+
+/**
+ * Marque un clip comme verifie s'il porte encore au moins un signal de revue.
+ *
+ * @param {ClipWithTranslation | null | undefined} clip Clip a mettre a jour.
+ * @returns {void}
+ */
+export function markClipAsVerified(clip: ClipWithTranslation | null | undefined): void {
+	if (!clip || !hasClipReviewIssue(clip)) return;
+	clip.hasBeenVerified = true;
+}
+
 export class SubtitleClip extends ClipWithTranslation {
 	surah: number;
 	verse: number;
@@ -281,6 +337,7 @@ export class SubtitleClip extends ClipWithTranslation {
 	endWordIndex: number;
 	indopakText: string;
 	private isHydratingIndopakText = false;
+	alignmentMetadata: SubtitleAlignmentMetadata | null = $state(null);
 	wbwTranslation: string[]; // Traduction mot à mot
 	isFullVerse: boolean; // Indique si ce clip contient l'intégralité du verset
 	isLastWordsOfVerse: boolean; // Indique si ce clip contient les derniers mots du verset
@@ -311,6 +368,22 @@ export class SubtitleClip extends ClipWithTranslation {
 		this.wbwTranslation = $state(wbwTranslation);
 		this.isFullVerse = $state(isFullVerse);
 		this.isLastWordsOfVerse = $state(isLastWordsOfVerse);
+	}
+
+	/**
+	 * Invalide les métadonnées d'alignement quand le clip devient manuel.
+	 */
+	override markAsManualEdit() {
+		super.markAsManualEdit();
+		if (!this.alignmentMetadata) return;
+
+		this.alignmentMetadata = null;
+		const currentContext = globalState.getSubtitlesEditorState.segmentationContext;
+		globalState.getSubtitlesEditorState.segmentationContext = {
+			...currentContext,
+			audioId: null,
+			alignedSegments: []
+		};
 	}
 
 	/**
@@ -513,6 +586,15 @@ export class SubtitleClip extends ClipWithTranslation {
 		clonedClip.indopakText = this.indopakText;
 		clonedClip.arabicInlineStyleRuns = JSON.parse(JSON.stringify(this.arabicInlineStyleRuns ?? []));
 		clonedClip.associatedImagePath = this.associatedImagePath;
+		clonedClip.needsLongReview = this.needsLongReview;
+		clonedClip.needsReview = this.needsReview;
+		clonedClip.needsCoverageReview = this.needsCoverageReview;
+		clonedClip.hasBeenVerified = this.hasBeenVerified;
+		clonedClip.comeFromIA = this.comeFromIA;
+		clonedClip.confidence = this.confidence;
+		clonedClip.alignmentMetadata = this.alignmentMetadata
+			? JSON.parse(JSON.stringify(this.alignmentMetadata))
+			: null;
 		return clonedClip;
 	}
 }

@@ -38,6 +38,7 @@ export function useAutoSegmentationWizard() {
 	let minSilenceMs = $state(persisted?.minSilenceMs ?? 200);
 	let minSpeechMs = $state(persisted?.minSpeechMs ?? 1000);
 	let padMs = $state(persisted?.padMs ?? 100);
+	let includeWbwTimestamps = $state(persisted?.includeWbwTimestamps ?? false);
 	let fillBySilence = $state(persisted?.fillBySilence ?? true);
 	let extendBeforeSilence = $state(persisted?.extendBeforeSilence ?? false);
 	let extendBeforeSilenceMs = $state(persisted?.extendBeforeSilenceMs ?? 50);
@@ -258,7 +259,8 @@ export function useAutoSegmentationWizard() {
 	async function listenSegmentationStatus(): Promise<UnlistenFn | null> {
 		return listen<{ message?: string; progress?: number }>('segmentation-status', (event) => {
 			if (typeof event.payload.message === 'string') currentStatus = event.payload.message;
-			if (typeof event.payload.progress === 'number') {
+			// Quand on finit l'upload (100%), on cache la progress bar
+			if (typeof event.payload.progress === 'number' && event.payload.progress < 100) {
 				currentStatusProgress = Math.max(0, Math.min(100, event.payload.progress));
 			} else {
 				currentStatusProgress = null;
@@ -344,15 +346,12 @@ export function useAutoSegmentationWizard() {
 		currentStatusProgress = null;
 		resetEstimatedProgress();
 
-		if (
-			selection.runtime !== 'hf_json' &&
-			(selection.mode === 'api' || selection.localAsrMode === 'multi_aligner')
-		) {
+		if (selection.runtime !== 'hf_json' && selection.localAsrMode === 'multi_aligner' && selection.mode === 'local') {
 			const audioDurationS = getAutoSegmentationAudioDurationS();
 			const estimated = await estimateSegmentationDuration({
 				endpoint: 'process_audio_session',
 				audioDurationS,
-				modelName: selection.mode === 'api' ? selection.cloudModel : selection.multiModel,
+				modelName: selection.multiModel,
 				device: selection.device
 			});
 			if (estimated?.estimated_duration_s && estimated.estimated_duration_s > 0) {
@@ -384,6 +383,7 @@ export function useAutoSegmentationWizard() {
 						device: selection.device,
 						hfToken: selection.hfToken,
 						allowCloudFallback: selection.mode !== 'local',
+						includeWbwTimestamps,
 						fillBySilence,
 						extendBeforeSilence,
 						extendBeforeSilenceMs
@@ -414,6 +414,7 @@ export function useAutoSegmentationWizard() {
 				minSilenceMs,
 				minSpeechMs,
 				padMs,
+				includeWordByWord: includeWbwTimestamps,
 				fillBySilence,
 				extendBeforeSilence,
 				extendBeforeSilenceMs,
@@ -474,6 +475,11 @@ export function useAutoSegmentationWizard() {
 		padMs = value;
 		persistPatch({ padMs: value });
 	}
+	/** Active ou non la récupération des timestamps mot à mot. */
+	function setIncludeWbwTimestamps(value: boolean): void {
+		includeWbwTimestamps = value;
+		persistPatch({ includeWbwTimestamps: value });
+	}
 	/** Sets fill-by-silence and persists it. */
 	function setFillBySilence(value: boolean): void {
 		fillBySilence = value;
@@ -527,6 +533,9 @@ export function useAutoSegmentationWizard() {
 		},
 		get padMs() {
 			return padMs;
+		},
+		get includeWbwTimestamps() {
+			return includeWbwTimestamps;
 		},
 		get fillBySilence() {
 			return fillBySilence;
@@ -631,6 +640,7 @@ export function useAutoSegmentationWizard() {
 		setMinSilence,
 		setMinSpeech,
 		setPad,
+		setIncludeWbwTimestamps,
 		setFillBySilence,
 		setExtendBeforeSilence,
 		setExtendBeforeSilenceMs,
